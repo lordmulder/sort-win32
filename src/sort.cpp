@@ -1,5 +1,5 @@
 /*
- * Sort
+ * Sort for Win32
  * Created by LoRd_MuldeR <mulder2@gmx.de>.
  *
  * This work is licensed under the CC0 1.0 Universal License.
@@ -237,7 +237,8 @@ static void print_logo(void)
 static void print_manpage(void)
 {
 	print_logo();
-	fputws(L"Reads lines from the stdin, sortes these lines, and prints them to the stdout.\n\n", stderr);
+	fputws(L"Reads lines from the stdin, sortes these lines, and prints them to the stdout.\n", stderr);
+	fputws(L"Optionally, lines can be read from one or multiple files instead of stdin.\n\n", stderr);
 	fputws(L"Usage:\n", stderr);
 	fputws(L"   sort.exe [OPTIONS] [<FILE_1> [<FILE_2> ... ]]\n\n", stderr);
 	fputws(L"Options:\n", stderr);
@@ -382,19 +383,12 @@ extern "C"
 	__declspec(dllimport) unsigned int __stdcall SetErrorMode(unsigned int uMode);
 }
 
-int wmain(int argc, wchar_t *argv[])
+static int sort_main(int argc, wchar_t *argv[])
 {
 	int arg_off = 1;
 	bool success = true;
 	param_t params;
-
-	SetErrorMode(SetErrorMode(0x0003) | 0x0003);
-	setlocale(LC_ALL, "C");
-
-	_setmode(_fileno(stdin),  _O_U8TEXT);
-	_setmode(_fileno(stdout), _O_U8TEXT);
-	_setmode(_fileno(stderr), _O_U8TEXT);
-
+	
 	if (!parse_all_options(argc, argv, arg_off, params))
 	{
 		return EXIT_FAILURE;
@@ -431,4 +425,39 @@ int wmain(int argc, wchar_t *argv[])
 	}
 
 	return success ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+int wmain(int argc, wchar_t *argv[])
+{
+
+	SetErrorMode(SetErrorMode(0x0003) | 0x0003);
+	setlocale(LC_ALL, "C");
+
+	_setmode(_fileno(stdin),  _O_U8TEXT);
+	_setmode(_fileno(stdout), _O_U8TEXT);
+	_setmode(_fileno(stderr), _O_U8TEXT);
+
+#ifdef NDEBUG
+	int result = -1;
+	try
+	{
+		result = sort_main(argc, argv);
+	}
+	catch (const std::exception& ex)
+	{
+		fwprintf(stderr, L"\nEXCEPTION: %S\n\n", ex.what());
+		fflush(stderr);
+		_exit(666);
+	}
+	catch (...)
+	{
+		fputws(L"\nEXCEPTION: Unhandeled exception error !!!\n\n", stderr);
+		fflush(stderr);
+		_exit(666);
+	}
+#else
+	const int result = sort_main(argc, argv);
+#endif
+
+	return result;
 }
