@@ -9,10 +9,14 @@
 
 #include <cstdio>
 #include <set>
+#include <vector>
+#include <clocale>
+#include <algorithm>
+#include <memory>
 #include <fcntl.h>
 #include <io.h>
-#include <clocale>
-#include <memory>
+#include <stdexcept>
+#include <random>
 #include "strnatcmp.h"
 
 #define BUFFER_SIZE 131072U
@@ -75,6 +79,28 @@ static __forceinline wchar_t *read_line(wchar_t *const buffer, const int max_cou
 		return trim ? trim_str(line) : line;
 	}
 	return NULL;
+}
+
+// ==========================================================================
+// Random engine
+// ==========================================================================
+
+static std::unique_ptr<std::mt19937_64> g_random;
+
+static __forceinline void mt_init(void)
+{
+	std::random_device rd;
+	g_random.reset(new std::mt19937_64());
+	g_random->seed(rd());
+}
+
+static __forceinline size_t mt_next(const size_t max)
+{
+	if (!g_random)
+	{
+		throw std::logic_error("Random number generator not initialized!");
+	}
+	return (*g_random)() % max;
 }
 
 // ==========================================================================
@@ -149,16 +175,18 @@ struct CompareStrNIR
 // Sort class
 // ==========================================================================
 
-#define CREATE_SORT(SET,CMP) (static_cast<ISort*>(new Sort<std::SET<std::wstring,CMP>>()))
+#define CREATE_SORT(SET,CMP) (static_cast<IStore*>(new Store<std::SET<std::wstring,CMP>>()))
+#define CREATE_SHUF(SET) (static_cast<IStore*>())
 
-class ISort
+class IStore
 {
 public:
 	virtual bool read(const wchar_t *const file_name, const bool trim, const bool skip_blank) = 0;
+	virtual void shuffle(void) = 0;
 	virtual bool write(const bool flush) = 0;
 };
 
-template <typename SETTYPE> class Sort : public ISort
+template <typename ContainerType> class Store : public IStore
 {
 public:
 	virtual bool read(const wchar_t *const file_name, const bool trim, const bool skip_blank)
@@ -176,7 +204,7 @@ public:
 		{
 			if (!(truncated_last || (skip_blank && is_blank(line))))
 			{
-				m_set.insert(line);
+				add(m_store, line);
 			}
 			truncated_last = truncated_this;
 		}
@@ -189,9 +217,14 @@ public:
 		return true;
 	}
 
+	virtual void shuffle(void)
+	{
+		shuffle(m_store);
+	}
+
 	virtual bool write(const bool flush)
 	{
-		for (auto iter = m_set.cbegin(); iter != m_set.cend(); ++iter)
+		for (auto iter = m_store.cbegin(); iter != m_store.cend(); ++iter)
 		{
 			if (fwprintf(stdout, L"%s\n", iter->c_str()) < 0)
 			{
@@ -206,8 +239,43 @@ public:
 		return true;
 	}
 
+protected:
+	template <typename T>
+	static void add(std::set<std::wstring, T> &store, const wchar_t *const line)
+	{
+		store.insert(line);
+	}
+
+	template <typename T>
+	static void add(std::multiset<std::wstring, T> &store, const wchar_t *const line)
+	{
+		store.insert(line);
+	}
+
+	static void add(std::vector<std::wstring> &store, const wchar_t *const line)
+	{
+		store.push_back(line);
+	}
+
+	template <typename T>
+	static void shuffle(std::set<std::wstring, T> &store)
+	{
+		throw std::logic_error("Shuffle not supported by this type of storage!");
+	}
+
+	template <typename T>
+	static void shuffle(std::multiset<std::wstring, T> &store)
+	{
+		throw std::logic_error("Shuffle not supported by this type of storage!");
+	}
+
+	static void shuffle(std::vector<std::wstring> &store)
+	{
+		std::random_shuffle(store.begin(), store.end(), mt_next);
+	}
+
 private:
-	SETTYPE m_set;
+	ContainerType m_store;
 	wchar_t m_buffer[BUFFER_SIZE];
 };
 
@@ -225,6 +293,7 @@ typedef struct _param_t
 	bool skip_blank;
 	bool keep_going;
 	bool natural;
+	bool shuffle;
 }
 param_t;
 
@@ -237,18 +306,21 @@ static void print_logo(void)
 static void print_manpage(void)
 {
 	print_logo();
-	fputws(L"Reads lines from the stdin, sortes these lines, and prints them to the stdout.\n", stderr);
+	fputws(L"Reads lines from the stdin, sorts these lines, and prints them to the stdout.\n", stderr);
 	fputws(L"Optionally, lines can be read from one or multiple files instead of stdin.\n\n", stderr);
 	fputws(L"Usage:\n", stderr);
 	fputws(L"   sort.exe [OPTIONS] [<FILE_1> [<FILE_2> ... ]]\n\n", stderr);
-	fputws(L"Options:\n", stderr);
-	fputws(L"   --reverse       Sort the lines descending, instead of ascending.\n", stderr);
-	fputws(L"   --ignore-case   Ignore the character casing when sorting the lines.\n", stderr);
-	fputws(L"   --trim          Remove leading/trailing whitespace characters.\n", stderr);
-	fputws(L"   --force-flush   Force flush of stdout after each line was printed.\n", stderr);
+	fputws(L"Sorting options:\n", stderr);
+	fputws(L"   --reverse       Sort the lines descending, default is ascending.\n", stderr);
+	fputws(L"   --ignore-case   Ignore the character casing while sorting the lines.\n", stderr);
 	fputws(L"   --unique        Discard any duplicate lines from the result set.\n", stderr);
-	fputws(L"   --skip-blank    Discard any lines consisting solely of whitespaces.\n", stderr);
-	fputws(L"   --natural       Sort the lines using 'natural' string order.\n", stderr);
+	fputws(L"   --natural       Sort the lines using 'natural order' string comparison.\n\n", stderr);
+	fputws(L"Input options:\n", stderr);
+	fputws(L"   --trim          Remove leading/trailing whitespace characters.\n", stderr);
+	fputws(L"   --skip-blank    Discard any lines consisting solely of whitespaces.\n\n", stderr);
+	fputws(L"Other options:\n", stderr);
+	fputws(L"   --shuffle       Shuffle the lines randomly, instead of sorting.\n", stderr);
+	fputws(L"   --force-flush   Force flush of the stdout after each line was printed.\n", stderr);
 	fputws(L"   --keep-going    Do not abort, if processing an input file failed.\n", stderr);
 }
 
@@ -286,6 +358,10 @@ static bool parse_option(const wchar_t *const arg_name, param_t &params)
 	{
 		params.natural = true;
 	}
+	else if (!_wcsicmp(arg_name, L"shuffle"))
+	{
+		params.shuffle = true;
+	}
 	else if (!_wcsicmp(arg_name, L"help"))
 	{
 		print_manpage();
@@ -294,8 +370,8 @@ static bool parse_option(const wchar_t *const arg_name, param_t &params)
 	else
 	{
 		print_logo();
-		fwprintf(stderr, L"Error: Specified option \"--%s\" is unknown!\n", arg_name);
-		fputws(L"Type \"sort.exe --help\" for details.\n", stderr);
+		fwprintf(stderr, L"Error: Specified option \"--%s\" is unknown or misspelled!\n", arg_name);
+		fputws(L"Please type \"sort.exe --help\" for details.\n", stderr);
 		return false;
 	}
 	return true;
@@ -317,58 +393,71 @@ static bool parse_all_options(const int argc, const wchar_t *const argv[], int &
 		}
 		break;
 	}
+	if (params.shuffle && (params.ignore_case || params.reverse || params.unique || params.natural))
+	{
+		fputws(L"Error: Option \"--shuffle\" can not be combined with any of the sorting options!\n", stderr);
+		fputws(L"Please type \"sort.exe --help\" for details.\n", stderr);
+		return false;
+	}
 	return true;
 }
 
-static ISort *create_sort(const param_t &params)
+static IStore *create_store(const param_t &params)
 {
-	if (!params.natural)
+	if (params.shuffle)
 	{
-		if (params.unique)
-		{
-			if (params.ignore_case)
-			{
-				return (params.reverse) ? CREATE_SORT(set, CompareStrIR) : CREATE_SORT(set, CompareStrI);
-			}
-			else
-			{
-				return (params.reverse) ? CREATE_SORT(set, CompareStrR) : CREATE_SORT(set, CompareStr);
-			}
-		}
-		else
-		{
-			if (params.ignore_case)
-			{
-				return (params.reverse) ? CREATE_SORT(multiset, CompareStrIR) : CREATE_SORT(multiset, CompareStrI);
-			}
-			else
-			{
-				return (params.reverse) ? CREATE_SORT(multiset, CompareStrR) : CREATE_SORT(multiset, CompareStr);
-			}
-		}
+		return new Store<std::vector<std::wstring>>();
 	}
 	else
 	{
-		if (params.unique)
+		if (!params.natural)
 		{
-			if (params.ignore_case)
+			if (params.unique)
 			{
-				return (params.reverse) ? CREATE_SORT(set, CompareStrNIR) : CREATE_SORT(set, CompareStrNI);
+				if (params.ignore_case)
+				{
+					return (params.reverse) ? CREATE_SORT(set, CompareStrIR) : CREATE_SORT(set, CompareStrI);
+				}
+				else
+				{
+					return (params.reverse) ? CREATE_SORT(set, CompareStrR) : CREATE_SORT(set, CompareStr);
+				}
 			}
 			else
 			{
-				return (params.reverse) ? CREATE_SORT(set, CompareStrNR) : CREATE_SORT(set, CompareStrN);
+				if (params.ignore_case)
+				{
+					return (params.reverse) ? CREATE_SORT(multiset, CompareStrIR) : CREATE_SORT(multiset, CompareStrI);
+				}
+				else
+				{
+					return (params.reverse) ? CREATE_SORT(multiset, CompareStrR) : CREATE_SORT(multiset, CompareStr);
+				}
 			}
 		}
 		else
 		{
-			if (params.ignore_case)
+			if (params.unique)
 			{
-				return (params.reverse) ? CREATE_SORT(multiset, CompareStrNIR) : CREATE_SORT(multiset, CompareStrNI);
+				if (params.ignore_case)
+				{
+					return (params.reverse) ? CREATE_SORT(set, CompareStrNIR) : CREATE_SORT(set, CompareStrNI);
+				}
+				else
+				{
+					return (params.reverse) ? CREATE_SORT(set, CompareStrNR) : CREATE_SORT(set, CompareStrN);
+				}
 			}
 			else
 			{
-				return (params.reverse) ? CREATE_SORT(multiset, CompareStrNR) : CREATE_SORT(multiset, CompareStrN);
+				if (params.ignore_case)
+				{
+					return (params.reverse) ? CREATE_SORT(multiset, CompareStrNIR) : CREATE_SORT(multiset, CompareStrNI);
+				}
+				else
+				{
+					return (params.reverse) ? CREATE_SORT(multiset, CompareStrNR) : CREATE_SORT(multiset, CompareStrN);
+				}
 			}
 		}
 	}
@@ -394,14 +483,19 @@ static int sort_main(int argc, wchar_t *argv[])
 		return EXIT_FAILURE;
 	}
 
-	std::unique_ptr<ISort> sort(create_sort(params));
+	std::unique_ptr<IStore> store(create_store(params));
+
+	if (params.shuffle)
+	{
+		mt_init();
+	}
 
 	if (arg_off < argc)
 	{
 		while (arg_off < argc)
 		{
 			const wchar_t *const file_name = argv[arg_off++];
-			if (!sort->read(file_name, params.trim, params.skip_blank))
+			if (!store->read(file_name, params.trim, params.skip_blank))
 			{
 				success = false;
 				if (!params.keep_going)
@@ -413,13 +507,18 @@ static int sort_main(int argc, wchar_t *argv[])
 	}
 	else
 	{
-		if (!sort->read(NULL, params.trim, params.skip_blank))
+		if (!store->read(NULL, params.trim, params.skip_blank))
 		{
 			success = false;
 		}
 	}
 
-	if (!sort->write(params.flush))
+	if (params.shuffle)
+	{
+		store->shuffle();
+	}
+
+	if (!store->write(params.flush))
 	{
 		success = false;
 	}
