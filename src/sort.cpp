@@ -176,12 +176,11 @@ struct CompareStrNIR
 // ==========================================================================
 
 #define CREATE_SORT(SET,CMP) (static_cast<IStore*>(new Store<std::SET<std::wstring,CMP>>()))
-#define CREATE_SHUF(SET) (static_cast<IStore*>())
 
 class IStore
 {
 public:
-	virtual bool read(const wchar_t *const file_name, const bool trim, const bool skip_blank) = 0;
+	virtual bool read(const wchar_t *const file_name, const bool utf16, const bool trim, const bool skip_blank) = 0;
 	virtual void shuffle(void) = 0;
 	virtual bool write(const bool flush) = 0;
 };
@@ -189,9 +188,9 @@ public:
 template <typename ContainerType> class Store : public IStore
 {
 public:
-	virtual bool read(const wchar_t *const file_name, const bool trim, const bool skip_blank)
+	virtual bool read(const wchar_t *const file_name, const bool utf16, const bool trim, const bool skip_blank)
 	{
-		FILE *const file = file_name ? _wfopen(file_name, L"r") : stdin;
+		FILE *const file = file_name ? _wfopen(file_name, utf16 ? L"rt,ccs=UNICODE" : L"rt,ccs=UTF-8") : stdin;
 		if (!file)
 		{
 			fwprintf(stderr, L"Failed to open input file: %s\n", file_name);
@@ -288,12 +287,13 @@ typedef struct _param_t
 	bool reverse;
 	bool ignore_case;
 	bool unique;
-	bool trim;
-	bool flush;
-	bool skip_blank;
-	bool keep_going;
 	bool natural;
+	bool trim;
+	bool skip_blank;
+	bool utf16;
 	bool shuffle;
+	bool flush;
+	bool keep_going;
 }
 param_t;
 
@@ -317,10 +317,11 @@ static void print_manpage(void)
 	fputws(L"   --natural       Sort the lines using 'natural order' string comparison.\n\n", stderr);
 	fputws(L"Input options:\n", stderr);
 	fputws(L"   --trim          Remove leading/trailing whitespace characters.\n", stderr);
-	fputws(L"   --skip-blank    Discard any lines consisting solely of whitespaces.\n\n", stderr);
+	fputws(L"   --skip-blank    Discard any lines consisting solely of whitespaces.\n", stderr);
+	fputws(L"   --utf16         Process input lines as UTF-16, default is UTF-8.\n\n", stderr);
 	fputws(L"Other options:\n", stderr);
 	fputws(L"   --shuffle       Shuffle the lines randomly, instead of sorting.\n", stderr);
-	fputws(L"   --force-flush   Force flush of the stdout after each line was printed.\n", stderr);
+	fputws(L"   --flush         Force flush of the stdout after each line was printed.\n", stderr);
 	fputws(L"   --keep-going    Do not abort, if processing an input file failed.\n", stderr);
 }
 
@@ -334,33 +335,37 @@ static bool parse_option(const wchar_t *const arg_name, param_t &params)
 	{
 		params.ignore_case = true;
 	}
-	else if (!_wcsicmp(arg_name, L"trim"))
-	{
-		params.trim = true;
-	}
-	else if (!_wcsicmp(arg_name, L"force-flush"))
-	{
-		params.flush = true;
-	}
 	else if (!_wcsicmp(arg_name, L"unique"))
 	{
 		params.unique = true;
-	}
-	else if (!_wcsicmp(arg_name, L"skip-blank"))
-	{
-		params.skip_blank = true;
-	}
-	else if (!_wcsicmp(arg_name, L"keep-going"))
-	{
-		params.keep_going = true;
 	}
 	else if (!_wcsicmp(arg_name, L"natural"))
 	{
 		params.natural = true;
 	}
+	else if (!_wcsicmp(arg_name, L"trim"))
+	{
+		params.trim = true;
+	}
+	else if (!_wcsicmp(arg_name, L"skip-blank"))
+	{
+		params.skip_blank = true;
+	}
+	else if (!_wcsicmp(arg_name, L"utf16"))
+	{
+		params.utf16 = true;
+	}
 	else if (!_wcsicmp(arg_name, L"shuffle"))
 	{
 		params.shuffle = true;
+	}
+	else if (!_wcsicmp(arg_name, L"flush"))
+	{
+		params.flush = true;
+	}
+	else if (!_wcsicmp(arg_name, L"keep-going"))
+	{
+		params.keep_going = true;
 	}
 	else if (!_wcsicmp(arg_name, L"help"))
 	{
@@ -483,6 +488,9 @@ static int sort_main(int argc, wchar_t *argv[])
 		return EXIT_FAILURE;
 	}
 
+	_setmode(_fileno(stdin),  params.utf16 ? _O_WTEXT : _O_U8TEXT);
+	_setmode(_fileno(stdout), params.utf16 ? _O_WTEXT : _O_U8TEXT);
+
 	std::unique_ptr<IStore> store(create_store(params));
 
 	if (params.shuffle)
@@ -495,7 +503,7 @@ static int sort_main(int argc, wchar_t *argv[])
 		while (arg_off < argc)
 		{
 			const wchar_t *const file_name = argv[arg_off++];
-			if (!store->read(file_name, params.trim, params.skip_blank))
+			if (!store->read(file_name, params.utf16, params.trim, params.skip_blank))
 			{
 				success = false;
 				if (!params.keep_going)
@@ -507,7 +515,7 @@ static int sort_main(int argc, wchar_t *argv[])
 	}
 	else
 	{
-		if (!store->read(NULL, params.trim, params.skip_blank))
+		if (!store->read(NULL, params.utf16, params.trim, params.skip_blank))
 		{
 			success = false;
 		}
@@ -531,9 +539,6 @@ int wmain(int argc, wchar_t *argv[])
 
 	SetErrorMode(SetErrorMode(0x0003) | 0x0003);
 	setlocale(LC_ALL, "C");
-
-	_setmode(_fileno(stdin),  _O_U8TEXT);
-	_setmode(_fileno(stdout), _O_U8TEXT);
 	_setmode(_fileno(stderr), _O_U8TEXT);
 
 #ifdef NDEBUG
