@@ -17,6 +17,7 @@
 #include <io.h>
 #include <stdexcept>
 #include <random>
+#include <mutex>
 #include "strnatcmp.h"
 
 #define BUFFER_SIZE 131072U
@@ -85,23 +86,27 @@ static __forceinline wchar_t *read_line(wchar_t *const buffer, const int max_cou
 // Random engine
 // ==========================================================================
 
-static std::unique_ptr<std::mt19937_64> g_random;
-
-static __forceinline void mt_init(void)
+class RandomMT19937
 {
-	std::random_device rd;
-	g_random.reset(new std::mt19937_64());
-	g_random->seed(rd());
-}
-
-static __forceinline size_t mt_next(const size_t max)
-{
-	if (!g_random)
+public:
+	static size_t next(const size_t max)
 	{
-		throw std::logic_error("Random number generator not initialized!");
+		const std::lock_guard<std::mutex> lock(mutex);
+		if (!mt19937)
+		{
+			std::random_device rnd;
+			mt19937.reset(new std::mt19937_64(rnd()));
+		}
+		return (*mt19937)() % max;
 	}
-	return (*g_random)() % max;
-}
+
+private:
+	static std::mutex mutex;
+	static std::unique_ptr<std::mt19937_64> mt19937;
+};
+
+std::mutex RandomMT19937::mutex;
+std::unique_ptr<std::mt19937_64> RandomMT19937::mt19937;
 
 // ==========================================================================
 // CompareStr classes
@@ -172,25 +177,57 @@ struct CompareStrNIR
 };
 
 // ==========================================================================
-// Sort class
+// Iterator class
 // ==========================================================================
 
-#define CREATE_SORT(SET,CMP) (static_cast<IStore*>(new Store<std::SET<std::wstring,CMP>>()))
+class IIterator
+{
+public:
+	virtual bool hasNext(void) = 0;
+	virtual const std::wstring &next(void) = 0;
+};
+
+template <typename IterType>
+class Iterator : public IIterator
+{
+public:
+	Iterator(const IterType &begin, const IterType &end)
+		: m_current(begin), m_end(end)
+	{
+	}
+
+	virtual bool hasNext(void)
+	{
+		return m_current != m_end;
+	}
+
+	virtual const std::wstring &next(void)
+	{
+		return *m_current++;
+	}
+
+private:
+	Iterator(const Iterator&) = delete;
+	IterType m_current;
+	const IterType m_end;
+};
+
+// ==========================================================================
+// Store class
+// ==========================================================================
 
 class IStore
 {
 public:
-	virtual bool read(const wchar_t *const file_name, const bool utf16, const bool trim, const bool skip_blank) = 0;
-	virtual void shuffle(void) = 0;
-	virtual bool write(const bool flush) = 0;
-};
-
-template <typename ContainerType> class Store : public IStore
-{
-public:
-	virtual bool read(const wchar_t *const file_name, const bool utf16, const bool trim, const bool skip_blank)
+	IStore(const bool utf16, const bool trim, const bool skip_blank, const bool flush)
+	:
+		m_utf16(utf16), m_trim(trim), m_skip_blank(skip_blank), m_flush(flush)
 	{
-		FILE *const file = file_name ? _wfopen(file_name, utf16 ? L"rt,ccs=UNICODE" : L"rt,ccs=UTF-8") : stdin;
+	}
+
+	virtual bool read(const wchar_t *const file_name)
+	{
+		FILE *const file = file_name ? _wfopen(file_name, m_utf16 ? L"rt,ccs=UNICODE" : L"rt,ccs=UTF-8") : stdin;
 		if (!file)
 		{
 			fwprintf(stderr, L"Failed to open input file: %s\n", file_name);
@@ -199,11 +236,11 @@ public:
 
 		bool truncated_this = false, truncated_last = false;
 		wchar_t *line;
-		while (line = read_line(m_buffer, BUFFER_SIZE, file, trim, truncated_this))
+		while (line = read_line(m_buffer, BUFFER_SIZE, file, m_trim, truncated_this))
 		{
-			if (!(truncated_last || (skip_blank && is_blank(line))))
+			if (!(truncated_last || (m_skip_blank && is_blank(line))))
 			{
-				add(m_store, line);
+				add(line);
 			}
 			truncated_last = truncated_this;
 		}
@@ -216,71 +253,98 @@ public:
 		return true;
 	}
 
-	virtual void shuffle(void)
+	virtual bool write(void)
 	{
-		shuffle(m_store);
-	}
-
-	virtual bool write(const bool flush)
-	{
-		for (auto iter = m_store.cbegin(); iter != m_store.cend(); ++iter)
+		const std::unique_ptr<IIterator> iter(iterator());
+		while (iter->hasNext())
 		{
-			if (fwprintf(stdout, L"%s\n", iter->c_str()) < 0)
+			if (fwprintf(stdout, L"%s\n", iter->next().c_str()) < 0)
 			{
 				return false;
 			}
-			if (flush)
+			if (m_flush)
 			{
 				fflush(stdout); /*force flush*/
 			}
 		}
-
 		return true;
 	}
 
 protected:
-	template <typename T>
-	static void add(std::set<std::wstring, T> &store, const wchar_t *const line)
+	virtual void add(const wchar_t *const line) = 0;
+	virtual IIterator *iterator(void) = 0;
+
+private:
+	IStore(const IStore&) = delete;
+	wchar_t m_buffer[BUFFER_SIZE];
+	const bool m_utf16, m_trim, m_skip_blank, m_flush;
+};
+
+template <template<class, class, class> typename Set, typename Comparator>
+class Sorter : public IStore
+{
+public:
+	Sorter(const bool utf16, const bool trim, const bool skip_blank, const bool flush)
+		: IStore(utf16, trim, skip_blank, flush)
 	{
-		store.insert(line);
 	}
 
-	template <typename T>
-	static void add(std::multiset<std::wstring, T> &store, const wchar_t *const line)
+	static IStore* createInstance(const bool utf16, const bool trim, const bool skip_blank, const bool flush)
 	{
-		store.insert(line);
+		return new Sorter(utf16, trim, skip_blank, flush);
 	}
 
-	static void add(std::vector<std::wstring> &store, const wchar_t *const line)
+protected:
+	typedef Set<std::wstring, Comparator, std::allocator<std::wstring>> ConatinerType;
+
+	virtual void add(const wchar_t *const line)
 	{
-		store.push_back(line);
+		m_store.insert(line);
 	}
 
-	template <typename T>
-	static void shuffle(std::set<std::wstring, T> &store)
+	virtual IIterator *iterator(void)
 	{
-		throw std::logic_error("Shuffle not supported by this type of storage!");
-	}
-
-	template <typename T>
-	static void shuffle(std::multiset<std::wstring, T> &store)
-	{
-		throw std::logic_error("Shuffle not supported by this type of storage!");
-	}
-
-	static void shuffle(std::vector<std::wstring> &store)
-	{
-		std::random_shuffle(store.begin(), store.end(), mt_next);
+		return new Iterator<typename ConatinerType::const_iterator>(m_store.cbegin(), m_store.cend());
 	}
 
 private:
-	ContainerType m_store;
-	wchar_t m_buffer[BUFFER_SIZE];
+	ConatinerType m_store;
+};
+
+class Shuffler : public IStore
+{
+public:
+	Shuffler(const bool utf16, const bool trim, const bool skip_blank, const bool flush)
+		: IStore(utf16, trim, skip_blank, flush)
+	{
+	}
+
+	static IStore* createInstance(const bool utf16, const bool trim, const bool skip_blank, const bool flush)
+	{
+		return new Shuffler(utf16, trim, skip_blank, flush);
+	}
+
+protected:
+	virtual void add(const wchar_t *const line)
+	{
+		m_store.push_back(line);
+	}
+
+	virtual IIterator *iterator(void)
+	{
+		std::random_shuffle(m_store.begin(), m_store.end(), RandomMT19937::next);
+		return new Iterator<std::vector<std::wstring>::const_iterator>(m_store.cbegin(), m_store.cend());
+	}
+
+private:
+	std::vector<std::wstring> m_store;
 };
 
 // ==========================================================================
 // Helper functions
 // ==========================================================================
+
+#define CREATE_SORTER(X,Y) Sorter<std::X,Y>::createInstance(params.utf16, params.trim, params.skip_blank, params.flush)
 
 typedef struct _param_t
 {
@@ -411,7 +475,7 @@ static IStore *create_store(const param_t &params)
 {
 	if (params.shuffle)
 	{
-		return new Store<std::vector<std::wstring>>();
+		return Shuffler::createInstance(params.utf16, params.trim, params.skip_blank, params.flush);
 	}
 	else
 	{
@@ -421,22 +485,22 @@ static IStore *create_store(const param_t &params)
 			{
 				if (params.ignore_case)
 				{
-					return (params.reverse) ? CREATE_SORT(set, CompareStrIR) : CREATE_SORT(set, CompareStrI);
+					return (params.reverse) ? CREATE_SORTER(set, CompareStrIR) : CREATE_SORTER(set, CompareStrI);
 				}
 				else
 				{
-					return (params.reverse) ? CREATE_SORT(set, CompareStrR) : CREATE_SORT(set, CompareStr);
+					return (params.reverse) ? CREATE_SORTER(set, CompareStrR) : CREATE_SORTER(set, CompareStr);
 				}
 			}
 			else
 			{
 				if (params.ignore_case)
 				{
-					return (params.reverse) ? CREATE_SORT(multiset, CompareStrIR) : CREATE_SORT(multiset, CompareStrI);
+					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrIR) : CREATE_SORTER(multiset, CompareStrI);
 				}
 				else
 				{
-					return (params.reverse) ? CREATE_SORT(multiset, CompareStrR) : CREATE_SORT(multiset, CompareStr);
+					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrR) : CREATE_SORTER(multiset, CompareStr);
 				}
 			}
 		}
@@ -446,22 +510,22 @@ static IStore *create_store(const param_t &params)
 			{
 				if (params.ignore_case)
 				{
-					return (params.reverse) ? CREATE_SORT(set, CompareStrNIR) : CREATE_SORT(set, CompareStrNI);
+					return (params.reverse) ? CREATE_SORTER(set, CompareStrNIR) : CREATE_SORTER(set, CompareStrNI);
 				}
 				else
 				{
-					return (params.reverse) ? CREATE_SORT(set, CompareStrNR) : CREATE_SORT(set, CompareStrN);
+					return (params.reverse) ? CREATE_SORTER(set, CompareStrNR) : CREATE_SORTER(set, CompareStrN);
 				}
 			}
 			else
 			{
 				if (params.ignore_case)
 				{
-					return (params.reverse) ? CREATE_SORT(multiset, CompareStrNIR) : CREATE_SORT(multiset, CompareStrNI);
+					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrNIR) : CREATE_SORTER(multiset, CompareStrNI);
 				}
 				else
 				{
-					return (params.reverse) ? CREATE_SORT(multiset, CompareStrNR) : CREATE_SORT(multiset, CompareStrN);
+					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrNR) : CREATE_SORTER(multiset, CompareStrN);
 				}
 			}
 		}
@@ -493,17 +557,12 @@ static int sort_main(int argc, wchar_t *argv[])
 
 	std::unique_ptr<IStore> store(create_store(params));
 
-	if (params.shuffle)
-	{
-		mt_init();
-	}
-
 	if (arg_off < argc)
 	{
 		while (arg_off < argc)
 		{
 			const wchar_t *const file_name = argv[arg_off++];
-			if (!store->read(file_name, params.utf16, params.trim, params.skip_blank))
+			if (!store->read(file_name))
 			{
 				success = false;
 				if (!params.keep_going)
@@ -515,20 +574,15 @@ static int sort_main(int argc, wchar_t *argv[])
 	}
 	else
 	{
-		if (!store->read(NULL, params.utf16, params.trim, params.skip_blank))
+		success = store->read(NULL); /*stdin*/
+	}
+
+	if (success || params.keep_going)
+	{
+		if (!store->write())
 		{
-			success = false;
+			success = false; /*failed*/
 		}
-	}
-
-	if (params.shuffle)
-	{
-		store->shuffle();
-	}
-
-	if (!store->write(params.flush))
-	{
-		success = false;
 	}
 
 	return success ? EXIT_SUCCESS : EXIT_FAILURE;
