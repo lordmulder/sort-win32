@@ -11,7 +11,7 @@ Sorting options:
    --reverse       Sort the lines descending, default is ascending.
    --ignore-case   Ignore the character casing while sorting the lines.
    --unique        Discard any duplicate lines from the result set.
-   --natural       Sort the lines using 'natural order' string comparison.
+   --numerical     Digits in the lines are considered as numerical content.
 
 Input options:
    --trim          Remove leading/trailing whitespace characters.

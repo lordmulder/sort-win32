@@ -18,7 +18,12 @@
 #include <stdexcept>
 #include <random>
 #include <mutex>
-#include "strnatcmp.h"
+
+extern "C"
+{
+	__declspec(dllimport) int __stdcall StrCmpLogicalW(const wchar_t *psz1, const wchar_t *psz2);
+	__declspec(dllimport) unsigned int __stdcall SetErrorMode(unsigned int uMode);
+}
 
 #define BUFFER_SIZE 131072U
 
@@ -144,35 +149,19 @@ struct CompareStrIR
 	}
 };
 
-struct CompareStrN
+struct CompareStrL
 {
 	bool operator() (const std::wstring& lhs, const std::wstring& rhs) const
 	{
-		return (strnatcmp(lhs.c_str(), rhs.c_str()) < 0);
+		return (StrCmpLogicalW(lhs.c_str(), rhs.c_str()) < 0);
 	}
 };
 
-struct CompareStrNR
+struct CompareStrLR
 {
 	bool operator() (const std::wstring& lhs, const std::wstring& rhs) const
 	{
-		return (strnatcmp(lhs.c_str(), rhs.c_str()) > 0);
-	}
-};
-
-struct CompareStrNI
-{
-	bool operator() (const std::wstring& lhs, const std::wstring& rhs) const
-	{
-		return (strnatcasecmp(lhs.c_str(), rhs.c_str()) < 0);
-	}
-};
-
-struct CompareStrNIR
-{
-	bool operator() (const std::wstring& lhs, const std::wstring& rhs) const
-	{
-		return (strnatcasecmp(lhs.c_str(), rhs.c_str()) > 0);
+		return (StrCmpLogicalW(lhs.c_str(), rhs.c_str()) > 0);
 	}
 };
 
@@ -351,7 +340,7 @@ typedef struct _param_t
 	bool reverse;
 	bool ignore_case;
 	bool unique;
-	bool natural;
+	bool numerical;
 	bool trim;
 	bool skip_blank;
 	bool utf16;
@@ -378,7 +367,7 @@ static void print_manpage(void)
 	fputws(L"   --reverse       Sort the lines descending, default is ascending.\n", stderr);
 	fputws(L"   --ignore-case   Ignore the character casing while sorting the lines.\n", stderr);
 	fputws(L"   --unique        Discard any duplicate lines from the result set.\n", stderr);
-	fputws(L"   --natural       Sort the lines using 'natural order' string comparison.\n\n", stderr);
+	fputws(L"   --numerical     Digits in the lines are considered as numerical content.\n\n", stderr);
 	fputws(L"Input options:\n", stderr);
 	fputws(L"   --trim          Remove leading/trailing whitespace characters.\n", stderr);
 	fputws(L"   --skip-blank    Discard any lines consisting solely of whitespaces.\n", stderr);
@@ -403,9 +392,9 @@ static bool parse_option(const wchar_t *const arg_name, param_t &params)
 	{
 		params.unique = true;
 	}
-	else if (!_wcsicmp(arg_name, L"natural"))
+	else if (!_wcsicmp(arg_name, L"numerical"))
 	{
-		params.natural = true;
+		params.numerical = true;
 	}
 	else if (!_wcsicmp(arg_name, L"trim"))
 	{
@@ -462,9 +451,15 @@ static bool parse_all_options(const int argc, const wchar_t *const argv[], int &
 		}
 		break;
 	}
-	if (params.shuffle && (params.ignore_case || params.reverse || params.unique || params.natural))
+	if (params.shuffle && (params.ignore_case || params.reverse || params.unique || params.numerical))
 	{
 		fputws(L"Error: Option \"--shuffle\" can not be combined with any of the sorting options!\n", stderr);
+		fputws(L"Please type \"sort.exe --help\" for details.\n", stderr);
+		return false;
+	}
+	if (params.ignore_case && params.numerical)
+	{
+		fputws(L"Error: Options \"--ignore-case\" and \"--numerical\" are mutually exclusive!\n", stderr);
 		fputws(L"Please type \"sort.exe --help\" for details.\n", stderr);
 		return false;
 	}
@@ -479,7 +474,7 @@ static IStore *create_store(const param_t &params)
 	}
 	else
 	{
-		if (!params.natural)
+		if (!params.numerical)
 		{
 			if (params.unique)
 			{
@@ -508,25 +503,11 @@ static IStore *create_store(const param_t &params)
 		{
 			if (params.unique)
 			{
-				if (params.ignore_case)
-				{
-					return (params.reverse) ? CREATE_SORTER(set, CompareStrNIR) : CREATE_SORTER(set, CompareStrNI);
-				}
-				else
-				{
-					return (params.reverse) ? CREATE_SORTER(set, CompareStrNR) : CREATE_SORTER(set, CompareStrN);
-				}
+				return (params.reverse) ? CREATE_SORTER(set, CompareStrLR) : CREATE_SORTER(set, CompareStrL);
 			}
 			else
 			{
-				if (params.ignore_case)
-				{
-					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrNIR) : CREATE_SORTER(multiset, CompareStrNI);
-				}
-				else
-				{
-					return (params.reverse) ? CREATE_SORTER(multiset, CompareStrNR) : CREATE_SORTER(multiset, CompareStrN);
-				}
+				return (params.reverse) ? CREATE_SORTER(multiset, CompareStrLR) : CREATE_SORTER(multiset, CompareStrL);
 			}
 		}
 	}
@@ -538,7 +519,6 @@ static IStore *create_store(const param_t &params)
 
 extern "C"
 {
-	__declspec(dllimport) unsigned int __stdcall SetErrorMode(unsigned int uMode);
 }
 
 static int sort_main(int argc, wchar_t *argv[])
