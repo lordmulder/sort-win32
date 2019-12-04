@@ -1,4 +1,4 @@
-Sort for Win32, created by LoRd_MuldeR <mulder2@gmx.de>
+Sort/Shuf for Win32, created by LoRd_MuldeR <mulder2@gmx.de>
 This work is licensed under the CC0 1.0 Universal License.
 
 Reads lines from the stdin, sorts these lines, and prints them to the stdout.

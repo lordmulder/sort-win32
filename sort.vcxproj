@@ -24,6 +24,9 @@
   <ItemGroup>
     <Manifest Include="res\compat.manifest" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="res\version.rc" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{ADEBE3C1-9940-419C-9821-4F7DCD1D5EB7}</ProjectGuid>

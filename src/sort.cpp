@@ -352,7 +352,7 @@ param_t;
 
 static void print_logo(void)
 {
-	fwprintf(stderr, L"Sort for Win32 [%S], created by LoRd_MuldeR <mulder2@gmx.de>\n", __DATE__);
+	fwprintf(stderr, L"Sort/Shuf for Win32 [%S], created by LoRd_MuldeR <mulder2@gmx.de>\n", __DATE__);
 	fputws(L"This work is licensed under the CC0 1.0 Universal License.\n\n", stderr);
 }
 
