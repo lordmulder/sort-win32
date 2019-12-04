@@ -601,6 +601,12 @@ int wmain(int argc, wchar_t *argv[])
 	{
 		result = sort_main(argc, argv);
 	}
+	catch (const std::bad_alloc&)
+	{
+		fputws(L"\nEXCEPTION: Out of memory error !!!\n\n", stderr);
+		fflush(stderr);
+		_exit(666);
+	}
 	catch (const std::exception& ex)
 	{
 		fwprintf(stderr, L"\nEXCEPTION: %S\n\n", ex.what());
